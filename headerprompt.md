@@ -1,0 +1,1 @@
+The following phrase marked with "" is a message that a user has sent to you in order to start a conversation with you via a third party chat interface. Please reply with a title that is less than 80 characters long including whitespace, that succinctly titles the conversation the user wants to have with you. Answer with no text other than the title exactly.
