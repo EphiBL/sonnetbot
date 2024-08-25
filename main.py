@@ -8,59 +8,36 @@ import utils
 import state
 from discord.ext import commands
 
-# async def get_thread_history(thread):
-#     messages = []
-#     async for msg in thread.history(limit=60, oldest_first=True):
-#         role = "assistant" if msg.author == bot.user else "user"
-#         messages.append({"role": role, "content": msg.content})
-#     return messages
-
-# Use os package to get our .env file and load our keys
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-APP_ID = os.getenv('APP_ID')
-PUBLIC_KEY = os.getenv('PUBLIC_KEY')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
-RESPONSE_CHANNEL_ID = int(os.getenv('RESPONSE_CHANNEL_ID'))
 
-# Throw errors if any of the keys are blank
 if TOKEN is None:
     raise ValueError("No token found. Make sure DISCORD_TOKEN is set in your .env file")
-if APP_ID is None:
-    raise ValueError("No App_id found. Make sure APP_ID is set in your .env file")
-if PUBLIC_KEY is None:
-    raise ValueError("No PUBLIC_KEY found. Make sure PUBLIC_KEY is set in your .env file")
 if ANTHROPIC_API_KEY is None:
     raise ValueError("No Sonnet 3.5 api-key found, Make sure to set ANTHROPIC_API_KEY in your .env file")
-if RESPONSE_CHANNEL_ID is None:
-    raise ValueError("No response channel id found. Make sure to set RESPONSE_CHANNEL_ID in your .env file")
 
+# Init important variables
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
-
 bots = {}
-active_thread_ids = []
-
-has_api_key = False
-has_target_channel_id = False
 
 @bot.command()
 async def set_channel(ctx, id):
     print("set channel triggered")
-    bots[ctx.guild.id].response_channel_id = id
+    bots[ctx.guild].response_channel_id = id
     print(f"{ctx.guild.id}")
     await ctx.send(f"New response channel set")
 
 @bot.command()
-async def log(ctx):
+async def sonnetlog(ctx):
     print(f'Bots = {bots}')
     
+# Privately dm the caller asking for their api key
 @bot.command()
 async def set_key(ctx):
-    # Privately dm the caller asking for their api key
     try:
         await ctx.author.send("Please enter your API key. For security, never share your API key in public channels.")
 
@@ -82,63 +59,45 @@ async def set_key(ctx):
 @bot.event
 async def on_ready():
     for guild in bot.guilds:
-        bot_instance = state.BotServerState(guild.id)
-        bots[guild.id] = bot_instance
+        bot_instance = state.BotServerState(guild)
+        bots[guild] = bot_instance
     print(f'We have logged in as {bot.user}')
+
+@bot.event
+async def on_thread_delete(thread):
+    server_bot = bots[thread.guild]
+    if thread.id in server_bot.active_thread_ids:
+        server_bot.active_thread_ids.remove(thread.id)
+        print(f"Thread {thread.id} has been deleted and removed from active threads.")
+
+@bot.event
+async def on_thread_update(before, after):
+    server_bot = bots[before.guild]
+    if before.id in server_bot.active_thread_ids and after.archived:
+        server_bot.active_thread_ids.remove(after.id)
+        print(f"Thread {after.id} has been archived and removed from active threads.")
 
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
          return
-    # Invoke Commands!
     await bot.process_commands(message)
 
-    if isinstance(message.channel, discord.Thread) and message.channel.id in active_thread_ids:
-
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        system_prompt_path = os.path.join(current_dir, 'systemprompt.md')
-        system_prompt = await utils.read_file_async(system_prompt_path)
-        if system_prompt is None:
-            await message.channel.send("Error: unable to read system prompt.")
-            return
-
+    if isinstance(message.channel, discord.Thread) and message.channel.id in bots[message.guild].active_thread_ids:
+        sys_prompt = await utils.get_system_prompt(message.channel, 'systemprompt.md')
         thread_history = await utils.get_thread_history(bot, message.channel)
-
-        # Add a spoof user message if the first message is from the assistant
         if thread_history and thread_history[0]['role'] == 'assistant':
-            thread_history.insert(0, {"role": "user", "content": "Starting conversation"})
-
+            thread_history.insert(0, {"role": "user", "content": "Starting conversation"}) # Spoof a message if the first message is from the assistant
+        response = await utils.get_claude_response(message.channel, claude_client, thread_history, sys_prompt)
         try:
-            response = claude_client.messages.create(
-                model="claude-3-5-sonnet-20240620",
-                max_tokens = 5000,
-                system=system_prompt,
-                messages=thread_history
-            )
-            response_text = response.content[0].text
-            response_message = await utils.send_long_message(message.channel, response_text)
+            bot_message = await utils.send_long_message(message.channel, response)
         except Exception as e:
-            await message.channel.send(f"An error occurred: {str(e)}")
+            await message.channel.send("Bot message failed to send.")
 
-@bot.event
-async def on_thread_delete(thread):
-    if thread.id in active_thread_ids:
-        active_thread_ids.remove(thread.id)
-        print(f"Thread {thread.id} has been deleted and removed from active threads.")
-
-@bot.event
-async def on_thread_update(before, after):
-    if before.id in active_thread_ids and after.archived:
-        active_thread_ids.remove(after.id)
-        print(f"Thread {after.id} has been archived and removed from active threads.")
 
 @bot.command()
 async def chat(ctx, *text, thread_type=discord.ChannelType.public_thread, auto_archive_duration=60):
-    message_copy = ctx.message
-    cleaned_message = message_copy.content[6:]
-    command_message = " ".join(text)
-    command_message = command_message[0].upper() + command_message[1:]
-
+    msg = ctx.message
     try:
         await ctx.message.delete()
     except discord.errors.NotFound:
@@ -148,86 +107,52 @@ async def chat(ctx, *text, thread_type=discord.ChannelType.public_thread, auto_a
 
     loading_message = await ctx.send("Loading...")
 
-    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # Get the chat_title
+    command_message = " ".join(text)
+    command_message = command_message[0].upper() + command_message[1:]
+    header_prompt = await utils.get_system_prompt(ctx.channel, 'headerprompt.md')
+    messages = [{"role": "user", "content": command_message}]
+    header_response = await utils.get_claude_response(ctx.channel, claude_client, messages, header_prompt)
 
-    # Create the header_message
-    header_prompt_path = os.path.join(current_dir, 'headerprompt.md')
-    header_prompt = await utils.read_file_async(header_prompt_path)
-    header_message = f'{header_prompt}/n"{command_message}"'
-    if header_prompt is None:
-        await ctx.send("Error: Unable to read header prompt")
-        return
+    # Get the main response
+    cleaned_message = msg.content[6:]
+    messages = [{"role": "user", "content": cleaned_message}]
+    sys_prompt = await utils.get_system_prompt(msg.channel, 'systemprompt.md')
+    response = await utils.get_claude_response(ctx.channel, claude_client, messages, sys_prompt)
+    full_response =f"**Question: {cleaned_message}**\n\n{response}"
 
-    # Get the header_response
-    try:
-        header_response = claude_client.messages.create(
-            model="claude-3-5-sonnet-20240620",
-            max_tokens=300,
-            messages=[
-                {"role": "user", "content": header_message}
-            ]
-        )
-        header_text = header_response.content[0].text
-    except Exception as e:
-        await message_copy.channel.send(f"Error occurred with header request")
-
-    # Get the system prompt
-    system_prompt_path = os.path.join(current_dir, 'systemprompt.md')
-    system_prompt = await utils.read_file_async(system_prompt_path)
-    if system_prompt is None:
-        await message_copy.channel.send(f"Error: Unable to read system prompt.")
-        return
-
-    full_message = f"{system_prompt}\n{cleaned_message}"
-    try:
-        response = claude_client.messages.create(
-            model="claude-3-5-sonnet-20240620",
-            max_tokens=3000,
-            system=system_prompt,
-            messages=[
-                {"role": "user", "content": full_message}
-            ]
+    # Create the converation thread
+    bot_instance = bots[ctx.guild]
+    response_channel = bot.get_channel(int(bot_instance.response_channel_id))
+    if response_channel:
+        thread = await response_channel.create_thread(
+            name=header_response[:100],
+            auto_archive_duration=60, 
+            type=discord.ChannelType.public_thread
         )
 
-        # Create the converation thread
-        # response_channel = bot.get_channel(RESPONSE_CHANNEL_ID)
-        # print(f'{bots[message_copy.guild.id].response_channel_id}/n {bot.get_channel(bots[message_copy.guild.id].response_channel_id)}')
-        response_channel = bot.get_channel(int(bots[message_copy.guild.id].response_channel_id))
-        # response_channel = bots[message_copy.guild.id].response_channel_id
-        if response_channel:
-            thread = await response_channel.create_thread(
-                name=header_text[:100],
-                auto_archive_duration=60, 
-                type=discord.ChannelType.public_thread
-            )
+        try:
+            bot_message = await utils.send_long_message(thread, full_response)
+        except Exception as e:
+            await ctx.channel.send("Bot_message failed to send")
 
-            full_response =f"""
-**Question: {cleaned_message}**
+        thread_link = f"https://discord.com/channels/{msg.guild.id}/{thread.id}/{bot_message.id}"
+        await msg.channel.send(f"Question: `{command_message}`\nAnswer: {thread_link}")
+        bot_instance.add_active_thread(thread.id)
 
-{response.content[0].text}"""
-            first_message = await utils.send_long_message(thread, full_response)
-            if first_message:
-                thread_link = f"https://discord.com/channels/{message_copy.guild.id}/{thread.id}/{first_message.id}"
+    else:
+        await msg.channel.send("Error: Response channel not found, or not set.")
+    await loading_message.delete()
 
-                # Post a link to the thread in the original channel
-                await message_copy.channel.send(
-f"""
-Question: `{command_message}`
-Answer: {thread_link}
-"""
-                )
-            else:
-                await message_copy.send("Error: Failed to send message in the thread.")
-            if thread.id:
-                bot_instance = bots[message_copy.guild.id]
-                bot_instance.add_active_thread(thread.id)
-                active_thread_ids.append(thread.id)
-            else:
-                await message_copy.send("Error: No thread id, could not be added to active threads")
-        else:
-            await message_copy.channel.send("Error: Specified response channel not found.")
-    except Exception as e:
-        await message_copy.channel.send(f"An error occurred: {str(e)}")
+
+@bot.command()
+async def q(ctx, *text):
+    loading_message = await ctx.channel.send("Loading...")
+    command_message = " ".join(text)
+    sys_prompt = await utils.get_system_prompt(ctx.channel, 'systemprompt.md')
+    messages = [{"role": "user", "content": command_message}]
+    response = await utils.get_claude_response(ctx.channel, claude_client, messages, sys_prompt)
+    bot_message = await utils.send_long_message(ctx.channel, response)
     await loading_message.delete()
 
 
@@ -235,7 +160,5 @@ path = utils.get_log_file_path()
 utils.clear_log_file(path)
 handler = logging.FileHandler(filename=path, encoding='utf-8', mode='w')
 
-# Reset active thread IDs
-active_thread_ids.clear()
 print("Attempting to log in...")
 bot.run(TOKEN, log_handler=handler, log_level=logging.DEBUG)

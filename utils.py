@@ -70,3 +70,24 @@ async def get_thread_history(bot, thread):
         role = "assistant" if msg.author == bot.user else "user"
         messages.append({"role": role, "content": msg.content})
     return messages
+
+async def get_system_prompt(channel, target_prompt):
+    dir = path.dirname(path.abspath(__file__))
+    system_prompt_path = path.join(dir, target_prompt)
+    sys_prompt = await read_file_async(system_prompt_path)
+    if sys_prompt is None:
+        await channel.send(f"Error: Unable to read system prompt from {target_prompt}.")
+        return
+    return sys_prompt
+
+async def get_claude_response(channel, client, messages=[], sys_prompt="", max_tokens=3000):
+    try:
+        response = client.messages.create(
+            model="claude-3-5-sonnet-20240620",
+            max_tokens=max_tokens,
+            system = sys_prompt,
+            messages=messages,
+        )
+        return response.content[0].text.rstrip('.')
+    except Exception as e:
+        await channel.send(f"An error occurred: {str(e)}")

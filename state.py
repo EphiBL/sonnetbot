@@ -1,8 +1,10 @@
 class BotServerState():
-    def __init__(self, guild_id):
-        self.guild = guild_id
+    def __init__(self, guild):
+        self.guild = guild
         self.active_thread_ids = []
         self.response_channel_id = 0 
+        self.has_api_key = False
+        self.has_set_response_channel = False
 
     def get_servers(self):
         return self.active_servers
@@ -17,7 +19,4 @@ class BotServerState():
         self.response_channel_id = id
 
     def __repr__(self):
-        return f'BotServerState: Active Servers {self.guild}, Active Threads {self.active_thread_ids}'
-    
-
-
+        return f'BotServerState:  Servers {self.guild}, Active Threads {self.active_thread_ids}'
