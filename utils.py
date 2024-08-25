@@ -46,6 +46,7 @@ def split_message(message, limit=1750):  # Using 1900 to leave some room for for
     return parts
 
 async def send_long_message(channel, message):
+    message.rstrip('.')
     message = escape_discord_markdown(message)
     parts = split_message(message)
     first_message = None
@@ -58,14 +59,14 @@ async def send_long_message(channel, message):
 def escape_discord_markdown(text):
     text = text.rstrip('.')
     # Characters to escape: ` * _ ~ > |
-    chars_to_escape = ['\\', '`', '_', '~', '>', '|']
+    chars_to_escape = []
     for char in chars_to_escape:
         text = text.replace(char, '\\' + char)
     return text
 
-# async def get_thread_history(bot, thread):
-#     messages = []
-#     async for msg in thread.history(limit=60, oldest_first=True):
-#         role = "assistant" if msg.author == bot.user else "user"
-#         messages.append({"role": role, "content": msg.content})
-#     return messages
+async def get_thread_history(bot, thread):
+    messages = []
+    async for msg in thread.history(limit=60, oldest_first=True):
+        role = "assistant" if msg.author == bot.user else "user"
+        messages.append({"role": role, "content": msg.content})
+    return messages
