@@ -5,8 +5,21 @@ from dotenv import load_dotenv
 import anthropic
 import asyncio
 import utils
+import sqlite3
 import state
 from discord.ext import commands
+
+def init_database():
+    conn = sqlite3.connect('bot_data.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS server_settings (
+            guild_id INTEGER PRIMARY KEY,
+            response_channel_id INTEGER
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -27,7 +40,7 @@ bots = {}
 @bot.command()
 async def set_channel(ctx, id):
     print("set channel triggered")
-    bots[ctx.guild].response_channel_id = id
+    bots[ctx.guild].update_response_channel(int(id))
     print(f"{ctx.guild.id}")
     await ctx.send(f"New response channel set")
 
@@ -58,6 +71,7 @@ async def set_key(ctx):
 
 @bot.event
 async def on_ready():
+    init_database()
     for guild in bot.guilds:
         bot_instance = state.BotServerState(guild)
         bots[guild] = bot_instance
@@ -81,6 +95,9 @@ async def on_thread_update(before, after):
 async def on_message(message):
     if message.author == bot.user:
          return
+    if message.content.startswith('\\'):
+        return
+
     await bot.process_commands(message)
 
     if isinstance(message.channel, discord.Thread) and message.channel.id in bots[message.guild].active_thread_ids:
@@ -93,6 +110,24 @@ async def on_message(message):
             bot_message = await utils.send_long_message(message.channel, response)
         except Exception as e:
             await message.channel.send("Bot message failed to send.")
+
+
+@bot.command()
+async def stream(ctx):
+    text = """Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
+Duis aute irure dolor in reprehenderit in voluptate velit esse cillum.
+Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia."""
+
+    lines = text.split('\n')
+    message = await ctx.send("Streaming...")
+
+    for i in range(len(lines)):
+        await asyncio.sleep(0.25)  # Adjust this delay as needed
+        await message.edit(content='\n'.join(lines[:i+1]))
+
+    await message.edit(content=f"{text}\n\nStreaming complete!")
 
 
 @bot.command()
